@@ -1,20 +1,8 @@
-# UI / app
-streamlit>=1.36.0
-
-# Data
-pandas>=2.0.0
-xlsxwriter>=3.1.0
-sqlalchemy>=2.0.0
-
-# LangChain (pin to match local working version)
+streamlit==1.49.1
+pandas==2.3.2
+xlsxwriter==3.2.9
+sqlalchemy==2.0.43
 langchain==0.3.27
-langchain-core==0.3.19
-langchain-community==0.3.7
-langchain-openai==0.2.11
-
-# LLM / OpenAI
-openai>=1.30.0
-tiktoken>=0.7.0
-
-# Env
-python-dotenv>=1.0.1
+langchain_community==0.3.29
+openai==1.106.1
+tiktoken==0.11.0
