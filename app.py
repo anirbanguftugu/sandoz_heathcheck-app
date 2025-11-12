@@ -314,7 +314,7 @@ def refine_query_with_context(query: str, history: list) -> str:
     12. If user uses 'payout factor' or 'payout percentage', they mean **achievement**.
     16. If user asks for 'Earnings', use: **Earnings = achievement * product_target_pay**.
     17. If user asks for focus product, identify the product with highest **product_wt**.
-    18. For 'sales' vs 'non-sales' component, use **metric/sales-non sales** (normalized column may appear as `metric_sales_non_sales`) which has 'Sales' and 'Non-Sales'.
+    18. For 'sales' vs 'non-sales' component, use **metric_sales_non_sales** (normalized column may appear as `metric_sales_non_sales`) which has 'Sales' and 'Non-Sales'.
 
     **Granularity & counting rules (IMPORTANT):**
     - The table can have multiple rows per employee per cycle/product. For any "count of reps" or "% of reps" request:
@@ -334,26 +334,26 @@ def refine_query_with_context(query: str, history: list) -> str:
 
     # === Nation Performance (weighted attainment) ===
     # Definition reminder:
-    # Filter to requested cycle and country; keep only rows where Metric/sales-non sales = 'Sales';
+    # Filter to requested cycle and country; keep only rows where metric_sales_non_sales = 'Sales';
     # weighted_attainment = product_wt * attainment;
     # nation_performance = SUM(weighted_attainment) / SUM(product_wt); show as percentage.
     # Use exact column names from `my_table` (normalized forms like `metric_sales_non_sales` are fine). Do not invent new columns.
 
     **Example NP1 — Nation Performance (single country & quarter)**
     User: "tell me Germany nation performance for the cycle of q2 2025?"
-    Refined: "Compute nation_performance for Germany for Q2-2025 using: keep only rows where Metric/sales-non sales = 'Sales'; compute weighted_attainment = product_wt * attainment; then nation_performance = SUM(weighted_attainment) / SUM(product_wt). Present a table with columns: country, cycle, nation_performance(%). Use the exact column names from `my_table`."
+    Refined: "Compute nation_performance for Germany for Q2-2025 using: keep only rows where metric_sales_non_sales = 'Sales'; compute weighted_attainment = product_wt * attainment; then nation_performance = SUM(weighted_attainment) / SUM(product_wt). Present a table with columns: country, cycle, nation_performance(%). Use the exact column names from `my_table`."
 
     **Example NP11 — Team-wise Nation Performance (within a country & cycle)**
     User: "team wise nation performance for India in Q2 2025"
-    Refined: "For India in Q2-2025, compute nation_performance grouped by team_business_unit using: filter to rows where Metric/sales-non sales = 'Sales'; compute weighted_attainment = product_wt * attainment; team_nation_performance = SUM(weighted_attainment)/SUM(product_wt) within each team_business_unit. Present: country, team_business_unit, cycle, nation_performance(%)."
+    Refined: "For India in Q2-2025, compute nation_performance grouped by team_business_unit using: filter to rows where metric_sales_non_sales = 'Sales'; compute weighted_attainment = product_wt * attainment; team_nation_performance = SUM(weighted_attainment)/SUM(product_wt) within each team_business_unit. Present: country, team_business_unit, cycle, nation_performance(%)."
 
     **Example NP12 — Product-wise Nation Performance (within a country & cycle)**
     User: "product wise nation performance for India in second trimester 2025"
-    Refined: "For India in C2-2025, compute nation_performance grouped by product_name using: filter to 'Sales' in Metric/sales-non sales; weighted_attainment = product_wt * attainment; product_nation_performance = SUM(weighted_attainment)/SUM(product_wt) within each product_name. Present: country, product_name, cycle, nation_performance(%)."
+    Refined: "For India in C2-2025, compute nation_performance grouped by product_name using: filter to 'Sales' in metric_sales_non_sales; weighted_attainment = product_wt * attainment; product_nation_performance = SUM(weighted_attainment)/SUM(product_wt) within each product_name. Present: country, product_name, cycle, nation_performance(%)."
 
     **Example NP13 — Team × Product Nation Performance (drilldown)**
     User: "team wise and product wise nation performance for India in Q2 2025"
-    Refined: "For India in Q2-2025, compute nation_performance grouped by team_business_unit and product_name. Filter to 'Sales' in Metric/sales-non sales; compute weighted_attainment = product_wt * attainment; group-level nation_performance = SUM(weighted_attainment)/SUM(product_wt) within each (team_business_unit, product_name). Present: country, team_business_unit, product_name, cycle, nation_performance(%)."
+    Refined: "For India in Q2-2025, compute nation_performance grouped by team_business_unit and product_name. Filter to 'Sales' in metric_sales_non_sales; compute weighted_attainment = product_wt * attainment; group-level nation_performance = SUM(weighted_attainment)/SUM(product_wt) within each (team_business_unit, product_name). Present: country, team_business_unit, product_name, cycle, nation_performance(%)."
 
     # === Reps with payout (>0, ≥100%, >100%) — EMPLOYEE-LEVEL AGGREGATION ===
 
