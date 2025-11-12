@@ -300,25 +300,100 @@ def refine_query_with_context(query: str, history: list) -> str:
     1. Rewrite the user question into a complete, contextually clear query
        that can be directly answered from the dataset. Make it elaborate and detailed as much as possible so that the agent will understand easily. FOCUS ON USER R.
     2. MUST normalize any mention of time cycles (quarters or trimesters) into the exact tokens used in the dataset:
-   - Quarters → format **Qn-YYYY** (e.g., Q1-2024, Q2-2025). Accept input variants such as "Q1", "quarter 1", "qtr 1", "first quarter of 2024", "quarter 2 2025", etc., and convert them to **Qn-YYYY**.
-   - Trimesters (1st/2nd/3rd trimester / first trimester / second trimester, etc.) → format **Cn-YYYY** where C1 = 1st trimester, C2 = 2nd trimester, C3 = 3rd trimester (e.g., C1-2025, C2-2024). Accept input variants such as "1st trimester", "second trimester", "third trim", "trimester 2 2025", etc., and convert them to **Cn-YYYY**.
-
-    3. If the user question is completely irrelevant or nonsensical or user is talking about anything which is not the part of data column or values. Try to follow the below few shot prompt example, if not there, try to rephrase query on your own with details., 
-       reply exactly: "This query is not relevant. Please rephrase your question."
+       - Quarters → format **Qn-YYYY** (e.g., Q1-2024, Q2-2025). Accept input variants such as "Q1", "quarter 1", "qtr 1", "first quarter of 2024", "quarter 2 2025", etc., and convert them to **Qn-YYYY**.
+       - Trimesters (1st/2nd/3rd trimester / first trimester / second trimester, etc.) → format **Cn-YYYY** where C1 = 1st trimester, C2 = 2nd trimester, C3 = 3rd trimester (e.g., C1-2025, C2-2024). Accept input variants such as "1st trimester", "second trimester", "third trim", "trimester 2 2025", etc., and convert them to **Cn-YYYY**.
+    3. If the user question is completely irrelevant or nonsensical or user is talking about anything which is not the part of data column or values, reply exactly: "This query is not relevant. Please rephrase your question."
     4. If the user query is regarding any currency for any particular country mentioned by user, ask agent clearly to mention the relevant currency to be used. You can guide the agent by mentioning the currency in the rewritten query.
-    5. In the rewritten query always mention the agent to present the user requested in relevant table, which will be useful to draw insights. For example: If user ask for budget utilization, ask agent to create outoput tabel where payout, taget pay and %budget utilization is mentioned. And as payout and target pay is a currency value, ask to add relevant currency.
-    6. If user query refer 'geography' word, then in refine query mention this as terr_id.
-    7. If user mention 'field force', field force size', 'headcount','rep' word without mentioning role, then refer this as emp_id.
-    8. When user want any output in employee level, in refine query ask agent specificaly for emp id and emp_name.
-    9. If user mention 'component', 'molecule', 'promo grid', then user is actually referring 'Product Name', so in refine query mention product name.
-    10. If user is using 'quota', 'goal','goals' in his query, user is actually referring 'Targets', so modify the refine query accordingly.
-    11. If user is using 'wt', 'weight', 'product weight', 'weightage', then user is actually referring product wt column, so modify the refine query accordingly.
-    12. If user is using 'payout factor' or 'payout percentage', then user is referring 'achievement' column.
-    16. If user is asking for 'Earnings', then use the formula:
-        Earnings = Achievement * Product Target_pay
-    17. If user is asking about focus product, then user is actually want to know product with highest 'Product wt'
-    18. If user is asking about weight of 'non sales' or 'sales' component, 'Metric/sales-non sales' column has 'Sales' and 'Non-Sales' component categorization, so use this column in refined query.
+    5. In the rewritten query always mention the agent to present the user requested output in a relevant table with clear columns (and currency where applicable).
+    6. If user query refers to 'geography', treat it as **terr_id**.
+    7. If user mentions 'field force', 'field force size', 'headcount', or 'rep' (without role), refer to **emp_id**.
+    8. When user wants any output at employee level, explicitly include **emp_id** and **emp_name**.
+    9. If user mentions 'component', 'molecule', 'promo grid', they mean **product_name**.
+    10. If user uses 'quota', 'goal', 'goals', they mean **targets**.
+    11. If user uses 'wt', 'weight', 'product weight', 'weightage', they mean **product_wt**.
+    12. If user uses 'payout factor' or 'payout percentage', they mean **achievement**.
+    16. If user asks for 'Earnings', use: **Earnings = achievement * product_target_pay**.
+    17. If user asks for focus product, identify the product with highest **product_wt**.
+    18. For 'sales' vs 'non-sales' component, use **metric/sales-non sales** (normalized column may appear as `metric_sales_non_sales`) which has 'Sales' and 'Non-Sales'.
+
+    **Granularity & counting rules (IMPORTANT):**
+    - The table can have multiple rows per employee per cycle/product. For any "count of reps" or "% of reps" request:
+      1) Apply **all requested filters first** (e.g., country, cycle, role_name, team_business_unit, product_name, terr_id).
+      2) Aggregate to **employee scope**: compute for each emp_id (and emp_name where needed) within the filtered scope:
+         - **emp_cycle_payout = SUM(product_level_payout)**
+         - **emp_cycle_target = SUM(product_target_pay)**
+      3) Then apply the condition on the **aggregated** values:
+         - For "payout > 0": use **emp_cycle_payout > 0**.
+         - For "≥ 100% payout": use **emp_cycle_payout >= emp_cycle_target**.
+         - For "> 100% payout" (strict): use **emp_cycle_payout > emp_cycle_target**.
+      4) For **percentages**, the denominator is **COUNT(DISTINCT emp_id)** in the same filtered scope (before applying the condition). The numerator is **COUNT(DISTINCT emp_id)** that meet the condition.
+      5) Only if the user explicitly says “row-level,” then interpret 100% at row level (`product_level_payout >= product_target_pay` per row). Otherwise default to **employee-level aggregation** as above.
+      6) Use **exact column names** from `my_table`. Do **not** invent new columns.
+
     ### 🔹 FEW-SHOT EXAMPLES
+
+    # === Nation Performance (weighted attainment) ===
+    # Definition reminder:
+    # Filter to requested cycle and country; keep only rows where Metric/sales-non sales = 'Sales';
+    # weighted_attainment = product_wt * attainment;
+    # nation_performance = SUM(weighted_attainment) / SUM(product_wt); show as percentage.
+    # Use exact column names from `my_table` (normalized forms like `metric_sales_non_sales` are fine). Do not invent new columns.
+
+    **Example NP1 — Nation Performance (single country & quarter)**
+    User: "tell me Germany nation performance for the cycle of q2 2025?"
+    Refined: "Compute nation_performance for Germany for Q2-2025 using: keep only rows where Metric/sales-non sales = 'Sales'; compute weighted_attainment = product_wt * attainment; then nation_performance = SUM(weighted_attainment) / SUM(product_wt). Present a table with columns: country, cycle, nation_performance(%). Use the exact column names from `my_table`."
+
+    **Example NP11 — Team-wise Nation Performance (within a country & cycle)**
+    User: "team wise nation performance for India in Q2 2025"
+    Refined: "For India in Q2-2025, compute nation_performance grouped by team_business_unit using: filter to rows where Metric/sales-non sales = 'Sales'; compute weighted_attainment = product_wt * attainment; team_nation_performance = SUM(weighted_attainment)/SUM(product_wt) within each team_business_unit. Present: country, team_business_unit, cycle, nation_performance(%)."
+
+    **Example NP12 — Product-wise Nation Performance (within a country & cycle)**
+    User: "product wise nation performance for India in second trimester 2025"
+    Refined: "For India in C2-2025, compute nation_performance grouped by product_name using: filter to 'Sales' in Metric/sales-non sales; weighted_attainment = product_wt * attainment; product_nation_performance = SUM(weighted_attainment)/SUM(product_wt) within each product_name. Present: country, product_name, cycle, nation_performance(%)."
+
+    **Example NP13 — Team × Product Nation Performance (drilldown)**
+    User: "team wise and product wise nation performance for India in Q2 2025"
+    Refined: "For India in Q2-2025, compute nation_performance grouped by team_business_unit and product_name. Filter to 'Sales' in Metric/sales-non sales; compute weighted_attainment = product_wt * attainment; group-level nation_performance = SUM(weighted_attainment)/SUM(product_wt) within each (team_business_unit, product_name). Present: country, team_business_unit, product_name, cycle, nation_performance(%)."
+
+    # === Reps with payout (>0, ≥100%, >100%) — EMPLOYEE-LEVEL AGGREGATION ===
+
+    **Example RP1 — Count of reps with payout > 0 (single country & cycle)**
+    User: "how many reps received payout in India for Q2 2025"
+    Refined: "For India in Q2-2025, after applying filters, aggregate to employee level: emp_cycle_payout = SUM(product_level_payout), emp_cycle_target = SUM(product_target_pay) per emp_id. Count DISTINCT emp_id with emp_cycle_payout > 0. Present: country, cycle, reps_with_payout_gt_0."
+
+    **Example RP2 — % of reps with payout > 0 (country & cycle)**
+    User: "what percent of reps got payout in Germany in second trimester 2025"
+    Refined: "For Germany in C2-2025, aggregate to employee level per emp_id: compute emp_cycle_payout = SUM(product_level_payout). Numerator = COUNT(DISTINCT emp_id where emp_cycle_payout > 0). Denominator = COUNT(DISTINCT emp_id) in the same filtered scope. percent = (numerator / NULLIF(denominator,0)) * 100. Present: country, cycle, percent_of_reps_with_payout_gt_0(%)."
+
+    **Example RP3 — Country+cycle grid (overview of payout > 0)**
+    User: "show count of reps with payout > 0 by country and cycle"
+    Refined: "For each (country, cycle), apply filters then aggregate to employee level (SUM product_level_payout per emp_id). Count DISTINCT emp_id with emp_cycle_payout > 0. Present: country, cycle, reps_with_payout_gt_0."
+
+    **Example RP4 — Role-wise count and % (payout > 0)**
+    User: "role wise count and % of reps who got payout in US for Q1 2025"
+    Refined: "For the US in Q1-2025, group by role_name. Aggregate to employee level within each role_name (SUM product_level_payout per emp_id). Numerator: COUNT(DISTINCT emp_id with emp_cycle_payout > 0). Denominator: COUNT(DISTINCT emp_id) per role_name. Present: role_name, country, cycle, reps_with_payout_gt_0, total_reps, percent_with_payout_gt_0(%)."
+
+    **Example RP5 — Count of reps with payout ≥ 100% (employee-level definition)**
+    User: "how many reps achieved 100% payout in India for Q2 2025"
+    Refined: "For India in Q2-2025, after filters aggregate per emp_id: emp_cycle_payout = SUM(product_level_payout), emp_cycle_target = SUM(product_target_pay). Count DISTINCT emp_id where emp_cycle_payout >= emp_cycle_target (>=100%). Present: country, cycle, reps_ge_100pct."
+
+    **Example RP6 — % of reps with payout ≥ 100%**
+    User: "what percent of reps achieved at least 100% payout in Germany for Q2 2025"
+    Refined: "Aggregate per emp_id within Germany, Q2-2025: emp_cycle_payout, emp_cycle_target. Numerator = COUNT(DISTINCT emp_id where emp_cycle_payout >= emp_cycle_target). Denominator = COUNT(DISTINCT emp_id) in scope. percent = (numerator / NULLIF(denominator,0)) * 100. Present: country, cycle, percent_reps_ge_100pct(%)."
+
+    **Example RP7 — % of reps with payout > 100% (strict above target)**
+    User: "what percent of reps exceeded 100% payout in Spain in second trimester 2025"
+    Refined: "Aggregate per emp_id within Spain, C2-2025. Use emp_cycle_payout > emp_cycle_target for numerator; denominator is DISTINCT emp_id in scope. Present: country, cycle, percent_reps_gt_100pct(%)."
+
+    **Example RP8 — Team-wise % with payout > 0**
+    User: "team wise percent of reps who got payout in India in Q2 2025"
+    Refined: "For India, Q2-2025, group by team_business_unit. Within each team, aggregate per emp_id: SUM(product_level_payout). Numerator = COUNT(DISTINCT emp_id with emp_cycle_payout > 0). Denominator = COUNT(DISTINCT emp_id) in that team. Present: country, team_business_unit, cycle, percent_of_reps_with_payout_gt_0(%)."
+
+    **Example RP9 — Product-wise % with payout ≥ 100%**
+    User: "product wise % of reps at 100%+ payout for India in Q2 2025"
+    Refined: "For India, Q2-2025, group by product_name. Within each product, aggregate per emp_id: SUM(product_level_payout) and SUM(product_target_pay). Numerator = COUNT(DISTINCT emp_id where emp_cycle_payout >= emp_cycle_target for that product grouping). Denominator = COUNT(DISTINCT emp_id) per product. Present: country, product_name, cycle, percent_reps_ge_100pct(%)."
+
+    # === Existing examples (kept as-is) ===
 
     Example A
     User: "how many countries do we have"
@@ -540,6 +615,8 @@ def refine_query_with_context(query: str, history: list) -> str:
     # base logic printed too
     print(refined_response)
     return refined_response
+
+
 
 def ask_csv_agent(user_question: str) -> str:
     user_history = [m.get("content", "") for m in st.session_state.messages if m.get("role") == "user"]
