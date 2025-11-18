@@ -140,11 +140,20 @@ CSV_PATH = os.environ.get("CSV_PATH", DEFAULT_CSV_PATH)
 
 df = None
 csv_load_error = None
+encodings = ['utf-8', 'latin-1', 'iso-8859-1', 'cp1252', 'utf-16', 'ascii']
+
 try:
-    df = pd.read_csv(CSV_PATH, low_memory=False)
+    for encoding in encodings:
+        try:
+            df = pd.read_csv(CSV_PATH, low_memory=False, encoding=encoding)
+            break
+        except Exception:
+            continue
+    
+    if df is None:
+        csv_load_error = "Failed to load CSV with any encoding"
 except Exception as e:
     csv_load_error = str(e)
-
 if df is None:
     st.error(
         "Could not load the dataset. Please ensure the CSV exists at the expected path or set 'CSV_PATH' in environment.\n\n"
