@@ -314,23 +314,71 @@ Current user question: "{query}"
 
 Task:
 1. Rewrite the user question into a complete, contextually clear query
-   that can be directly answered from the dataset. Make it elaborate and detailed as much as possible so that the agent will understand easily. FOCUS ON USER R.
+   that can be directly answered from the dataset.
+   - Make it elaborate, explicit, and easy to understand.
+   - Correct all spelling/typo issues from the user’s question.
+   - Clearly specify: which columns to use, what filters to apply, and what aggregations/grouping/sorting (GROUP BY / WHERE / ORDER BY) are needed.
+   - The refined output will be used by an agent to write SQL, so be as SQL-friendly and unambiguous as possible.
+   - Focus on the user's request and context.
+
 2. MUST normalize any mention of time cycles (quarters or trimesters) into the exact tokens used in the dataset:
    - Quarters → format **Qn-YYYY** (e.g., Q1-2024, Q2-2025).
    - Trimesters → format **Cn-YYYY** (e.g., C1-2025, C2-2024, C3-2025).
+   In the refined query, always use this normalized format.
+
 3. If the user question is completely irrelevant or nonsensical, reply exactly: "This query is not relevant. Please rephrase your question."
+
 4. If the user query involves a specific currency, clearly mention it in the refined query.
+
 5. In the refined query always specify the expected output columns and table format.
+
 6. If user mentions 'geography', use **terr_id**.
+
 7. If user mentions 'field force', 'rep', or 'headcount', use **emp_id**.
+
 8. If user mentions 'component' or 'molecule', use **product_name**.
+
 9. If user mentions 'quota' or 'goal', use **targets**.
+
 10. If user mentions 'payout factor' or 'payout percentage', use **achievement**.
+    - Do NOT confuse **achievement** with **attainment**. They are different concepts and may refer to different columns or calculations.
+
 11. If user mentions 'Earnings', use **Earnings = achievement * product_target_pay**.
+
 12. If user mentions 'weightage' or 'product weight', use **product_wt**.
-13. Always use exact column names from `my_table`.
+
+13. Always use exact column names from `my_table`. You may define derived fields (like emp_cycle_payout, emp_cycle_target, payout_pct, earnings) but do not invent new base columns.
+
 14. If user asks for focus product, identify the product with highest product_wt.
+
 15. For 'sales' vs 'non-sales', use column **metric_sales_non_sales**.
+
+16. **Attainment vs Average Attainment vs Nation Performance (IMPORTANT):**
+    - **Attainment (single row / non-aggregated):**
+      - If the user explicitly asks for attainment for a single row or clearly row-level context (e.g., attainment for a specific employee + product + cycle combination),
+        then:
+          - Use the **attainment** column directly.
+          - Do NOT apply SUM, AVG, or GROUP BY. Just filter to that row and show the attainment value.
+    - **Average Attainment (aggregated, NOT nation performance):**
+      - If the user asks for **average attainment**, or for **product-wise / team-wise average attainment**, or top/bottom based only on “attainment” (and they do NOT mention nation performance),
+        then:
+          - Treat this as **average attainment**, NOT nation performance.
+          - Use the formula: **average_attainment = SUM(sales) / SUM(targets)**.
+          - Apply grouping as requested (e.g., by product_name, by team_business_unit, by country, etc.).
+          - Show the result as a percentage.
+          - Do NOT use product_wt or the nation_performance weighted formula in these cases.
+    - **Nation Performance (weighted attainment):**
+      - Nation performance is a separate concept and must follow its own definition (see section below).
+      - Do NOT mix up “average attainment” (SUM(sales)/SUM(targets)) with nation_performance (weighted_attainment = product_wt * attainment).
+
+17. **Drivers of Nation Performance (product or team):**
+    - If the user asks "which product has driven my nation performance" or "which team has driven my nation performance":
+      - Step 1: First compute **overall nation_performance** for the requested country and cycle using the nation_performance definition (weighted attainment).
+      - Step 2: Then compute **product-wise** or **team-wise** nation_performance using the SAME weighted attainment formula:
+          - weighted_attainment = product_wt * attainment
+          - group-level nation_performance = SUM(weighted_attainment) / SUM(product_wt) for each product_name or team_business_unit.
+      - Step 3: Highlight the top and/or bottom performers based on these product-wise / team-wise nation_performance values.
+      - Do NOT use SUM(sales)/SUM(targets) for these “driver of nation performance” questions.
 
 
 **Granularity & counting rules (IMPORTANT):**
@@ -345,7 +393,7 @@ Task:
          - For "> 100% payout" (strict): use **emp_cycle_payout > emp_cycle_target**.
       4) For **percentages**, the denominator is **COUNT(DISTINCT emp_id)** in the same filtered scope (before applying the condition). The numerator is **COUNT(DISTINCT emp_id)** that meet the condition.
       5) Only if the user explicitly says “row-level,” then interpret 100% at row level (`product_level_payout >= product_target_pay` per row). Otherwise default to **employee-level aggregation** as above.
-      6) Use **exact column names** from `my_table`. Do **not** invent new columns.
+      6) Use **exact column names** from `my_table`. Do **not** invent new base columns.
 
 
 MANDATORY SQL AGGREGATION RULE (copy exactly when relevant):
@@ -359,290 +407,351 @@ For any user request that asks for "count of reps", "% of reps", "reps who achie
 Do NOT allow row-level comparisons for employee-level questions.
 
 MANDATORY for "highest/top/max" requests:
-When user asks for "highest", "top", "max", "top N", or "largest" in relation to payout, sales, earnings, or achievement,
-the agent MUST aggregate at the correct business level first (e.g., per emp_id for employee payout),
-then select the row(s) having the MAX() value from that aggregated result using an emp_agg CTE.
-Do NOT directly use row-level product_level_payout ordering.
+
+1) If the user asks for "highest", "top", "max", "top N", or "largest" in relation to
+   **payout, sales, earnings, or achievement**, or explicitly mentions reps, then:
+   - The agent MUST aggregate at the correct business level first
+     (for example, per emp_id for employee payout).
+   - Use an emp_agg CTE that sums product_level_payout and product_target_pay per emp_id
+     when dealing with payout-based employee metrics.
+   - Then select the row(s) having the MAX() value from that aggregated result.
+   - Do NOT directly use row-level product_level_payout ordering.
+
+2) If the user asks for "highest", "top", "max", "top N", or "largest" in relation to
+   **attainment or average attainment** (for example, "top products with highest attainment"),
+   then:
+   - DO NOT apply employee-level payout aggregation logic (do NOT introduce emp_agg,
+     product_level_payout, emp_cycle_payout, etc.).
+   - Treat this as an **attainment / average attainment** query:
+       • Use attainment column directly for pure row-level attainment questions, OR  
+       • For product-wise / team-wise / country-wise "highest attainment", compute
+         average_attainment = SUM(sales) / SUM(targets), grouped by the requested level
+         (e.g., product_name, team_business_unit, country).
+   - Order the grouped results by attainment or average_attainment and then select
+     the top N or max as requested.
+   - Do NOT use product_wt or the nation_performance formula for these attainment questions.
+
+3) Do NOT mix up these two cases:
+   - Payout / sales / earnings / achievement "highest" questions → use employee-level
+     payout aggregation with emp_agg as described above.
+   - Attainment / average attainment "highest" questions → use attainment rules only
+     (attainment column or SUM(sales)/SUM(targets)), and do NOT use emp_agg or payout fields.
+
 
 
 ### 🔹 FEW-SHOT EXAMPLES
 
-    # === Nation Performance (weighted attainment) ===
-    # Definition reminder:
-    # Filter to requested cycle and country; keep only rows where metric_sales_non_sales = 'Sales';
-    # weighted_attainment = product_wt * attainment;
-    # nation_performance = SUM(weighted_attainment) / SUM(product_wt); show as percentage.
-    # Use exact column names from `my_table` (normalized forms like `metric_sales_non_sales` are fine). Do not invent new columns.
+# === Attainment & Average Attainment (NOT nation performance) ===
+# Rules recap:
+# - For pure row-level attainment questions, use the attainment column without aggregation.
+# - For "average attainment" or product/team-wise average attainment, or top/bottom based on attainment (without mentioning nation performance),
+#   use: average_attainment = SUM(sales) / SUM(targets), grouped as requested, and show as percentage.
+# - Do NOT use product_wt or the nation_performance formula for average attainment.
+
+Example AT01 — Row-level Attainment (single row)
+User: "show attainment for this employee and product in India for Q2 2025"
+Refined:
+"For India in Q2-2025, filter my_table to the specified employee (emp_id or emp_name as given) and product_name.
+Return the row-level attainment value directly from the attainment column, without any aggregation.
+Present a table with columns: emp_id, emp_name, country, product_name, cycle, attainment(%)."
+
+Example AA01 — Average Attainment (single country & cycle)
+User: "what is the average attainment for India in Q3 2025?"
+Refined:
+"Compute average_attainment for India in Q3-2025 using the rule:
+average_attainment = SUM(sales) / SUM(targets).
+Filter only rows where metric_sales_non_sales = 'Sales'.
+Present a table with columns: country, cycle, average_attainment(%).
+Do not use product_wt or nation_performance formula."
+
+Example AA02 — Product-wise Average Attainment
+User: "give me product wise average attainment for Germany in Q2 2025"
+Refined:
+"For Germany in Q2-2025, compute product-wise average_attainment grouped by product_name.
+Formula per product_name: SUM(sales) / SUM(targets).
+Filter only metric_sales_non_sales = 'Sales'.
+Present columns: country, cycle, product_name, average_attainment(%).
+This is average attainment, do not confuse with nation_performance."
+
+
+# === Nation Performance (weighted attainment) ===
+# Definition reminder:
+# Filter to requested cycle and country; keep only rows where metric_sales_non_sales = 'Sales';
+# weighted_attainment = product_wt * attainment;
+# nation_performance = SUM(weighted_attainment) / SUM(product_wt); show as percentage.
+# Use exact column names from `my_table` (normalized forms like `metric_sales_non_sales` are fine). Do not invent new columns.
+
+**Example NP1 — Nation Performance (single country & quarter)**
+User: "tell me Germany nation performance for the cycle of q2 2025?"
+Refined: "Compute nation_performance for Germany for Q2-2025 using: keep only rows where metric_sales_non_sales = 'Sales'; compute weighted_attainment = product_wt * attainment; then nation_performance = SUM(weighted_attainment) / SUM(product_wt). Present a table with columns: country, cycle, nation_performance(%). Use the exact column names from `my_table`."
+
+**Example NP11 — Team-wise Nation Performance (within a country & cycle)**
+User: "team wise nation performance for India in Q2 2025"
+Refined: "For India in Q2-2025, compute nation_performance grouped by team_business_unit using: filter to rows where metric_sales_non_sales = 'Sales'; compute weighted_attainment = product_wt * attainment; team_nation_performance = SUM(weighted_attainment)/SUM(product_wt) within each team_business_unit. Present: country, team_business_unit, cycle, nation_performance(%)."
+
+**Example NP12 — Product-wise Nation Performance (within a country & cycle)**
+User: "product wise nation performance for India in second trimester 2025"
+Refined: "For India in C2-2025, compute nation_performance grouped by product_name using: filter to 'Sales' in metric_sales_non_sales; weighted_attainment = product_wt * attainment; product_nation_performance = SUM(weighted_attainment)/SUM(product_wt) within each product_name. Present: country, product_name, cycle, nation_performance(%)."
 
-    **Example NP1 — Nation Performance (single country & quarter)**
-    User: "tell me Germany nation performance for the cycle of q2 2025?"
-    Refined: "Compute nation_performance for Germany for Q2-2025 using: keep only rows where metric_sales_non_sales = 'Sales'; compute weighted_attainment = product_wt * attainment; then nation_performance = SUM(weighted_attainment) / SUM(product_wt). Present a table with columns: country, cycle, nation_performance(%). Use the exact column names from `my_table`."
+**Example NP13 — Team × Product Nation Performance (drilldown)**
+User: "team wise and product wise nation performance for India in Q2 2025"
+Refined: "For India in Q2-2025, compute nation_performance grouped by team_business_unit and product_name. Filter to 'Sales' in metric_sales_non_sales; compute weighted_attainment = product_wt * attainment; group-level nation_performance = SUM(weighted_attainment)/SUM(product_wt) within each (team_business_unit, product_name). Present: country, team_business_unit, product_name, cycle, nation_performance(%)."
+
 
-    **Example NP11 — Team-wise Nation Performance (within a country & cycle)**
-    User: "team wise nation performance for India in Q2 2025"
-    Refined: "For India in Q2-2025, compute nation_performance grouped by team_business_unit using: filter to rows where metric_sales_non_sales = 'Sales'; compute weighted_attainment = product_wt * attainment; team_nation_performance = SUM(weighted_attainment)/SUM(product_wt) within each team_business_unit. Present: country, team_business_unit, cycle, nation_performance(%)."
+# === Reps with payout (>0, ≥100%, >100%) — EMPLOYEE-LEVEL AGGREGATION ===
 
-    **Example NP12 — Product-wise Nation Performance (within a country & cycle)**
-    User: "product wise nation performance for India in second trimester 2025"
-    Refined: "For India in C2-2025, compute nation_performance grouped by product_name using: filter to 'Sales' in metric_sales_non_sales; weighted_attainment = product_wt * attainment; product_nation_performance = SUM(weighted_attainment)/SUM(product_wt) within each product_name. Present: country, product_name, cycle, nation_performance(%)."
+**Example RP1 — Count of reps with payout > 0 (single country & cycle)**
+User: "how many reps received payout in India for Q2 2025"
+Refined: "For India in Q2-2025, after applying filters, aggregate to employee level: emp_cycle_payout = SUM(product_level_payout), emp_cycle_target = SUM(product_target_pay) per emp_id. Count DISTINCT emp_id with emp_cycle_payout > 0. Present: country, cycle, reps_with_payout_gt_0."
+
+**Example RP2 — % of reps with payout > 0 (country & cycle)**
+User: "what percent of reps got payout in Germany in second trimester 2025"
+Refined: "For Germany in C2-2025, aggregate to employee level per emp_id: compute emp_cycle_payout = SUM(product_level_payout). Numerator = COUNT(DISTINCT emp_id where emp_cycle_payout > 0). Denominator = COUNT(DISTINCT emp_id) in the same filtered scope. percent = (numerator / NULLIF(denominator,0)) * 100. Present: country, cycle, percent_of_reps_with_payout_gt_0(%)."
 
-    **Example NP13 — Team × Product Nation Performance (drilldown)**
-    User: "team wise and product wise nation performance for India in Q2 2025"
-    Refined: "For India in Q2-2025, compute nation_performance grouped by team_business_unit and product_name. Filter to 'Sales' in metric_sales_non_sales; compute weighted_attainment = product_wt * attainment; group-level nation_performance = SUM(weighted_attainment)/SUM(product_wt) within each (team_business_unit, product_name). Present: country, team_business_unit, product_name, cycle, nation_performance(%)."
+**Example RP3 — Country+cycle grid (overview of payout > 0)**
+User: "show count of reps with payout > 0 by country and cycle"
+Refined: "For each (country, cycle), apply filters then aggregate to employee level (SUM product_level_payout per emp_id). Count DISTINCT emp_id with emp_cycle_payout > 0. Present: country, cycle, reps_with_payout_gt_0."
 
-    # === Reps with payout (>0, ≥100%, >100%) — EMPLOYEE-LEVEL AGGREGATION ===
+**Example RP4 — Role-wise count and % (payout > 0)**
+User: "role wise count and % of reps who got payout in US for Q1 2025"
+Refined: "For the US in Q1-2025, group by role_name. Aggregate to employee level within each role_name (SUM product_level_payout per emp_id). Numerator: COUNT(DISTINCT emp_id with emp_cycle_payout > 0). Denominator: COUNT(DISTINCT emp_id) per role_name. Present: role_name, country, cycle, reps_with_payout_gt_0, total_reps, percent_with_payout_gt_0(%)."
 
-    **Example RP1 — Count of reps with payout > 0 (single country & cycle)**
-    User: "how many reps received payout in India for Q2 2025"
-    Refined: "For India in Q2-2025, after applying filters, aggregate to employee level: emp_cycle_payout = SUM(product_level_payout), emp_cycle_target = SUM(product_target_pay) per emp_id. Count DISTINCT emp_id with emp_cycle_payout > 0. Present: country, cycle, reps_with_payout_gt_0."
+**Example RP5 — Count of reps with payout ≥ 100% (employee-level definition)**
+User: "how many reps achieved 100% payout in India for Q2 2025"
+Refined: "For India in Q2-2025, after filters aggregate per emp_id: emp_cycle_payout = SUM(product_level_payout), emp_cycle_target = SUM(product_target_pay). Count DISTINCT emp_id where emp_cycle_payout >= emp_cycle_target (>=100%). Present: country, cycle, reps_ge_100pct."
 
-    **Example RP2 — % of reps with payout > 0 (country & cycle)**
-    User: "what percent of reps got payout in Germany in second trimester 2025"
-    Refined: "For Germany in C2-2025, aggregate to employee level per emp_id: compute emp_cycle_payout = SUM(product_level_payout). Numerator = COUNT(DISTINCT emp_id where emp_cycle_payout > 0). Denominator = COUNT(DISTINCT emp_id) in the same filtered scope. percent = (numerator / NULLIF(denominator,0)) * 100. Present: country, cycle, percent_of_reps_with_payout_gt_0(%)."
+**Example RP6 — % of reps with payout ≥ 100%**
+User: "what percent of reps achieved at least 100% payout in Germany for Q2 2025"
+Refined: "Aggregate per emp_id within Germany, Q2-2025: emp_cycle_payout, emp_cycle_target. Numerator = COUNT(DISTINCT emp_id where emp_cycle_payout >= emp_cycle_target). Denominator = COUNT(DISTINCT emp_id) in scope. percent = (numerator / NULLIF(denominator,0)) * 100. Present: country, cycle, percent_reps_ge_100pct(%)."
 
-    **Example RP3 — Country+cycle grid (overview of payout > 0)**
-    User: "show count of reps with payout > 0 by country and cycle"
-    Refined: "For each (country, cycle), apply filters then aggregate to employee level (SUM product_level_payout per emp_id). Count DISTINCT emp_id with emp_cycle_payout > 0. Present: country, cycle, reps_with_payout_gt_0."
+**Example RP7 — % of reps with payout > 100% (strict above target)**
+User: "what percent of reps exceeded 100% payout in Spain in second trimester 2025"
+Refined: "Aggregate per emp_id within Spain, C2-2025. Use emp_cycle_payout > emp_cycle_target for numerator; denominator is DISTINCT emp_id in scope. Present: country, cycle, percent_reps_gt_100pct(%)."
 
-    **Example RP4 — Role-wise count and % (payout > 0)**
-    User: "role wise count and % of reps who got payout in US for Q1 2025"
-    Refined: "For the US in Q1-2025, group by role_name. Aggregate to employee level within each role_name (SUM product_level_payout per emp_id). Numerator: COUNT(DISTINCT emp_id with emp_cycle_payout > 0). Denominator: COUNT(DISTINCT emp_id) per role_name. Present: role_name, country, cycle, reps_with_payout_gt_0, total_reps, percent_with_payout_gt_0(%)."
+**Example RP8 — Team-wise % with payout > 0**
+User: "team wise percent of reps who got payout in India in Q2 2025"
+Refined: "For India, Q2-2025, group by team_business_unit. Within each team, aggregate per emp_id: SUM(product_level_payout). Numerator = COUNT(DISTINCT emp_id with emp_cycle_payout > 0). Denominator = COUNT(DISTINCT emp_id) in that team. Present: country, team_business_unit, cycle, percent_of_reps_with_payout_gt_0(%)."
 
-    **Example RP5 — Count of reps with payout ≥ 100% (employee-level definition)**
-    User: "how many reps achieved 100% payout in India for Q2 2025"
-    Refined: "For India in Q2-2025, after filters aggregate per emp_id: emp_cycle_payout = SUM(product_level_payout), emp_cycle_target = SUM(product_target_pay). Count DISTINCT emp_id where emp_cycle_payout >= emp_cycle_target (>=100%). Present: country, cycle, reps_ge_100pct."
+**Example RP9 — Product-wise % with payout ≥ 100%**
+User: "product wise % of reps at 100%+ payout for India in Q2 2025"
+Refined: "For India, Q2-2025, group by product_name. Within each product, aggregate per emp_id: SUM(product_level_payout) and SUM(product_target_pay). Numerator = COUNT(DISTINCT emp_id where emp_cycle_payout >= emp_cycle_target for that product grouping). Denominator = COUNT(DISTINCT emp_id) per product. Present: country, product_name, cycle, percent_reps_ge_100pct(%)."
 
-    **Example RP6 — % of reps with payout ≥ 100%**
-    User: "what percent of reps achieved at least 100% payout in Germany for Q2 2025"
-    Refined: "Aggregate per emp_id within Germany, Q2-2025: emp_cycle_payout, emp_cycle_target. Numerator = COUNT(DISTINCT emp_id where emp_cycle_payout >= emp_cycle_target). Denominator = COUNT(DISTINCT emp_id) in scope. percent = (numerator / NULLIF(denominator,0)) * 100. Present: country, cycle, percent_reps_ge_100pct(%)."
 
-    **Example RP7 — % of reps with payout > 100% (strict above target)**
-    User: "what percent of reps exceeded 100% payout in Spain in second trimester 2025"
-    Refined: "Aggregate per emp_id within Spain, C2-2025. Use emp_cycle_payout > emp_cycle_target for numerator; denominator is DISTINCT emp_id in scope. Present: country, cycle, percent_reps_gt_100pct(%)."
+# === Existing examples (kept as-is) ===
 
-    **Example RP8 — Team-wise % with payout > 0**
-    User: "team wise percent of reps who got payout in India in Q2 2025"
-    Refined: "For India, Q2-2025, group by team_business_unit. Within each team, aggregate per emp_id: SUM(product_level_payout). Numerator = COUNT(DISTINCT emp_id with emp_cycle_payout > 0). Denominator = COUNT(DISTINCT emp_id) in that team. Present: country, team_business_unit, cycle, percent_of_reps_with_payout_gt_0(%)."
+Example A
+User: "how many countries do we have"
+Refined: "Provide the number of distinct countries in the dataset (count distinct country). Present the result in a table with columns: metric, value."
 
-    **Example RP9 — Product-wise % with payout ≥ 100%**
-    User: "product wise % of reps at 100%+ payout for India in Q2 2025"
-    Refined: "For India, Q2-2025, group by product_name. Within each product, aggregate per emp_id: SUM(product_level_payout) and SUM(product_target_pay). Numerator = COUNT(DISTINCT emp_id where emp_cycle_payout >= emp_cycle_target for that product grouping). Denominator = COUNT(DISTINCT emp_id) per product. Present: country, product_name, cycle, percent_reps_ge_100pct(%)."
+**Example 1 — Sales (Quarter + Trimester reference)**
+User: "give me total sales role wise for india in 1st qtr 2025 and 2nd trimister 2024"  
+Refined: "Provide total sales grouped by role_name for India for Q1-2025 and C2-2024.  
+Present the results in a table with columns: role_name, cycle, sales."
 
-    # === Existing examples (kept as-is) ===
+---
 
-    Example A
-    User: "how many countries do we have"
-    Refined: "Provide the number of distinct countries in the dataset (count distinct country). Present the result in a table with columns: metric, value."
+**Example 2 — Sales by Geography**
+User: "show total sales geography wise in Q3 2024"  
+Refined: "Provide total sales grouped by terr_id for Q3-2024.  
+Present the results in a table with columns: terr_id, cycle, sales."
 
-    **Example 1 — Sales (Quarter + Trimester reference)**
-    User: "give me total sales role wise for india in 1st qtr 2025 and 2nd trimister 2024"  
-    Refined: "Provide total sales grouped by role_name for India for Q1-2025 and C2-2024.  
-    Present the results in a table with columns: role_name, cycle, sales."
+---
 
-    ---
+**Example 3 — Sales by Product**
+User: "compare sales by component in 2nd trimester 2025"  
+Refined: "Provide total sales grouped by product_name for C2-2025.  
+Present the results in a table with columns: product_name, cycle, sales."
 
-    **Example 2 — Sales by Geography**
-    User: "show total sales geography wise in Q3 2024"  
-    Refined: "Provide total sales grouped by terr_id for Q3-2024.  
-    Present the results in a table with columns: terr_id, cycle, sales."
+---
 
-    ---
+**Example 4 — Payout with Currency**
+User: "show payout by role for UK in Q4 2024"  
+Refined: "Provide total payout grouped by role_name for the UK for Q4-2024.  
+Present the results in a table with columns: role_name, cycle, payout (in GBP)."
 
-    **Example 3 — Sales by Product**
-    User: "compare sales by component in 2nd trimester 2025"  
-    Refined: "Provide total sales grouped by product_name for C2-2025.  
-    Present the results in a table with columns: product_name, cycle, sales."
+---
 
-    ---
+**Example 5 — Payout vs Target**
+User: "compare payout and target pay for india in 3rd quarter 2025"  
+Refined: "Provide payout and target_pay grouped by country for Q3-2025 for India.  
+Present the results in a table with columns: country, cycle, payout (INR), target_pay (INR)."
 
-    **Example 4 — Payout with Currency**
-    User: "show payout by role for UK in Q4 2024"  
-    Refined: "Provide total payout grouped by role_name for the UK for Q4-2024.  
-    Present the results in a table with columns: role_name, cycle, payout (in GBP)."
+---
 
-    ---
+**Example 6 — Budget Utilization**
+User: "show budget utilization by country for Q2 2025"  
+Refined: "Provide payout, target_pay, and %budget_utilization grouped by country for Q2-2025.  
+Present the results in a table with columns: country, cycle, payout (currency), target_pay (currency), budget_utilization(%)."
 
-    **Example 5 — Payout vs Target**
-    User: "compare payout and target pay for india in 3rd quarter 2025"  
-    Refined: "Provide payout and target_pay grouped by country for Q3-2025 for India.  
-    Present the results in a table with columns: country, cycle, payout (INR), target_pay (INR)."
+---
 
-    ---
+**Example 7 — Field Force Size**
+User: "show field force size by geography for 1st trimester 2025"  
+Refined: "Provide count of emp_id grouped by terr_id for C1-2025.  
+Present the results in a table with columns: terr_id, cycle, headcount."
 
-    **Example 6 — Budget Utilization**
-    User: "show budget utilization by country for Q2 2025"  
-    Refined: "Provide payout, target_pay, and %budget_utilization grouped by country for Q2-2025.  
-    Present the results in a table with columns: country, cycle, payout (currency), target_pay (currency), budget_utilization(%)."
+---
 
-    ---
+**Example 8 — Employee-Level View**
+User: "show payout for each employee in Q2 2025"  
+Refined: "Provide payout at employee level grouped by emp_id and emp_name for Q2-2025.  
+Present the results in a table with columns: emp_id, emp_name, cycle, payout (currency)."
 
-    **Example 7 — Field Force Size**
-    User: "show field force size by geography for 1st trimester 2025"  
-    Refined: "Provide count of emp_id grouped by terr_id for C1-2025.  
-    Present the results in a table with columns: terr_id, cycle, headcount."
+---
 
-    ---
+**Example 9 — Product Targets**
+User: "give me target for all molecules in Q1 2024"  
+Refined: "Provide targets grouped by product_name for Q1-2024.  
+Present the results in a table with columns: product_name, cycle, targets."
 
-    **Example 8 — Employee-Level View**
-    User: "show payout for each employee in Q2 2025"  
-    Refined: "Provide payout at employee level grouped by emp_id and emp_name for Q2-2025.  
-    Present the results in a table with columns: emp_id, emp_name, cycle, payout (currency)."
+---
 
-    ---
+**Example 10 — Achievement and Payout Factor**
+User: "show payout percentage by role for 2nd trimester 2025"  
+Refined: "Provide achievement (payout percentage) grouped by role_name for C2-2025.  
+Present the results in a table with columns: role_name, cycle, achievement(%)."
 
-    **Example 9 — Product Targets**
-    User: "give me target for all molecules in Q1 2024"  
-    Refined: "Provide targets grouped by product_name for Q1-2024.  
-    Present the results in a table with columns: product_name, cycle, targets."
+---
 
-    ---
+**Example 11 — Product Weightage**
+User: "show product weightage for each component in Q4 2025"  
+Refined: "Provide product_wt grouped by product_name for Q4-2025.  
+Present the results in a table with columns: product_name, cycle, product_wt."
 
-    **Example 10 — Achievement and Payout Factor**
-    User: "show payout percentage by role for 2nd trimester 2025"  
-    Refined: "Provide achievement (payout percentage) grouped by role_name for C2-2025.  
-    Present the results in a table with columns: role_name, cycle, achievement(%)."
+---
 
-    ---
+**Example 12 — Focus Product**
+User: "show focus product for Q3 2024"  
+Refined: "Identify the product with the highest product_wt for Q3-2024.  
+Present the results in a table with columns: product_name, cycle, product_wt."
 
-    **Example 11 — Product Weightage**
-    User: "show product weightage for each component in Q4 2025"  
-    Refined: "Provide product_wt grouped by product_name for Q4-2025.  
-    Present the results in a table with columns: product_name, cycle, product_wt."
+---
 
-    ---
+**Example 13 — Sales vs Non-Sales Weight**
+User: "show weight of non sales component for 1st trimester 2025"  
+Refined: "Provide product_wt for components categorized as 'Non-Sales' for C1-2025.  
+Present the results in a table with columns: component_type, cycle, product_wt."
 
-    **Example 12 — Focus Product**
-    User: "show focus product for Q3 2024"  
-    Refined: "Identify the product with the highest product_wt for Q3-2024.  
-    Present the results in a table with columns: product_name, cycle, product_wt."
+---
 
-    ---
+**Example 14 — Quota / Goal Queries**
+User: "compare goals and payout for europe in Q2 2024"  
+Refined: "Provide targets and payout grouped by country for Europe for Q2-2024.  
+Present the results in a table with columns: country, cycle, targets, payout (currency)."
 
-    **Example 13 — Sales vs Non-Sales Weight**
-    User: "show weight of non sales component for 1st trimester 2025"  
-    Refined: "Provide product_wt for components categorized as 'Non-Sales' for C1-2025.  
-    Present the results in a table with columns: component_type, cycle, product_wt."
+---
 
-    ---
+**Example 15 — Earnings Calculation**
+User: "show earnings by role for Q1 2025"  
+Refined: "Provide earnings (calculated as achievement * product_target_pay) grouped by role_name for Q1-2025.  
+Present the results in a table with columns: role_name, cycle, earnings (currency)."
 
-    **Example 14 — Quota / Goal Queries**
-    User: "compare goals and payout for europe in Q2 2024"  
-    Refined: "Provide targets and payout grouped by country for Europe for Q2-2024.  
-    Present the results in a table with columns: country, cycle, targets, payout (currency)."
+---
 
-    ---
+**Example 16 — Headcount Trend**
+User: "compare field force headcount between Q2 and Q3 2025"  
+Refined: "Provide count of emp_id (headcount) for Q2-2025 and Q3-2025.  
+Present the results in a table with columns: cycle, headcount."
 
-    **Example 15 — Earnings Calculation**
-    User: "show earnings by role for Q1 2025"  
-    Refined: "Provide earnings (calculated as achievement * product_target_pay) grouped by role_name for Q1-2025.  
-    Present the results in a table with columns: role_name, cycle, earnings (currency)."
+---
 
-    ---
+**Example 17 — Territory Comparison**
+User: "compare sales between north and south india in Q4 2024"  
+Refined: "Provide total sales grouped by terr_id for North India and South India for Q4-2024.  
+Present the results in a table with columns: terr_id, region, cycle, sales."
 
-    **Example 16 — Headcount Trend**
-    User: "compare field force headcount between Q2 and Q3 2025"  
-    Refined: "Provide count of emp_id (headcount) for Q2-2025 and Q3-2025.  
-    Present the results in a table with columns: cycle, headcount."
+---
 
-    ---
+**Example 18 — Invalid Query Handling**
+User: "how many chocolates were sold in mars"  
+Refined: "This query is not relevant. Please rephrase your question."
 
-    **Example 17 — Territory Comparison**
-    User: "compare sales between north and south india in Q4 2024"  
-    Refined: "Provide total sales grouped by terr_id for North India and South India for Q4-2024.  
-    Present the results in a table with columns: terr_id, region, cycle, sales."
+---
 
-    ---
+**Example 19 — Component-Level Earnings**
+User: "show earnings by component in Q3 2024"  
+Refined: "Provide earnings (achievement * product_target_pay) grouped by product_name for Q3-2024.  
+Present the results in a table with columns: product_name, cycle, earnings (currency)."
 
-    **Example 18 — Invalid Query Handling**
-    User: "how many chocolates were sold in mars"  
-    Refined: "This query is not relevant. Please rephrase your question."
+---
 
-    ---
+**Example 20 — Role-wise Achievement Comparison**
+User: "compare achievement across roles for 2nd trimester 2025"  
+Refined: "Provide achievement grouped by role_name for C2-2025.  
+Present the results in a table with columns: role_name, cycle, achievement(%)."
 
-    **Example 19 — Component-Level Earnings**
-    User: "show earnings by component in Q3 2024"  
-    Refined: "Provide earnings (achievement * product_target_pay) grouped by product_name for Q3-2024.  
-    Present the results in a table with columns: product_name, cycle, earnings (currency)."
+---
 
-    ---
+**Example 21 — Non-Sales Metric**
+User: "show payout for non sales metric in Q2 2025"  
+Refined: "Provide payout for components categorized as 'Non-Sales' in Q2-2025.  
+Present the results in a table with columns: component_type, cycle, payout (currency)."
 
-    **Example 20 — Role-wise Achievement Comparison**
-    User: "compare achievement across roles for 2nd trimester 2025"  
-    Refined: "Provide achievement grouped by role_name for C2-2025.  
-    Present the results in a table with columns: role_name, cycle, achievement(%)."
+---
 
-    ---
+**Example 22 — Role-wise Targets**
+User: "give me role wise quota for Q3 2025"  
+Refined: "Provide targets grouped by role_name for Q3-2025.  
+Present the results in a table with columns: role_name, cycle, targets."
 
-    **Example 21 — Non-Sales Metric**
-    User: "show payout for non sales metric in Q2 2025"  
-    Refined: "Provide payout for components categorized as 'Non-Sales' in Q2-2025.  
-    Present the results in a table with columns: component_type, cycle, payout (currency)."
+---
 
-    ---
+**Example 23 — Role-wise Payout & Achievement**
+User: "show payout and achievement by role for C2 2025"  
+Refined: "Provide payout and achievement grouped by role_name for C2-2025.  
+Present the results in a table with columns: role_name, cycle, payout (currency), achievement(%)."
 
-    **Example 22 — Role-wise Targets**
-    User: "give me role wise quota for Q3 2025"  
-    Refined: "Provide targets grouped by role_name for Q3-2025.  
-    Present the results in a table with columns: role_name, cycle, targets."
+---
 
-    ---
+**Example 24 — Territory + Product Analysis**
+User: "show sales by geography and product for Q1 2024"  
+Refined: "Provide total sales grouped by terr_id and product_name for Q1-2024.  
+Present the results in a table with columns: terr_id, product_name, cycle, sales."
 
-    **Example 23 — Role-wise Payout & Achievement**
-    User: "show payout and achievement by role for C2 2025"  
-    Refined: "Provide payout and achievement grouped by role_name for C2-2025.  
-    Present the results in a table with columns: role_name, cycle, payout (currency), achievement(%)."
+---
 
-    ---
+**Example 25 — Missing Year (auto-assume latest year)**
+User: "give me sales by role for Q2"  
+Refined: "Provide total sales grouped by role_name for Q2-2025 (assumed latest dataset year).  
+Present the results in a table with columns: role_name, cycle, sales."
 
-    **Example 24 — Territory + Product Analysis**
-    User: "show sales by geography and product for Q1 2024"  
-    Refined: "Provide total sales grouped by terr_id and product_name for Q1-2024.  
-    Present the results in a table with columns: terr_id, product_name, cycle, sales."
+---
 
-    ---
+**Example 26 — Achievement by Product Category**
+User: "show payout factor by molecule for 3rd trimester 2024"  
+Refined: "Provide achievement grouped by product_name for C3-2024.  
+Present the results in a table with columns: product_name, cycle, achievement(%)."
 
-    **Example 25 — Missing Year (auto-assume latest year)**
-    User: "give me sales by role for Q2"  
-    Refined: "Provide total sales grouped by role_name for Q2-2025 (assumed latest dataset year).  
-    Present the results in a table with columns: role_name, cycle, sales."
+---
 
-    ---
+**Example 27 — Goal vs Achievement by Role**
+User: "compare goal and achievement role wise for Q4 2024"  
+Refined: "Provide targets and achievement grouped by role_name for Q4-2024.  
+Present the results in a table with columns: role_name, cycle, targets, achievement(%)."
 
-    **Example 26 — Achievement by Product Category**
-    User: "show payout factor by molecule for 3rd trimester 2024"  
-    Refined: "Provide achievement grouped by product_name for C3-2024.  
-    Present the results in a table with columns: product_name, cycle, achievement(%)."
+---
 
-    ---
+**Example 28 — Currency Context**
+User: "show payout by product for Japan in Q1 2025"  
+Refined: "Provide payout grouped by product_name for Japan for Q1-2025, with payout values in JPY.  
+Present the results in a table with columns: product_name, cycle, payout (JPY)."
 
-    **Example 27 — Goal vs Achievement by Role**
-    User: "compare goal and achievement role wise for Q4 2024"  
-    Refined: "Provide targets and achievement grouped by role_name for Q4-2024.  
-    Present the results in a table with columns: role_name, cycle, targets, achievement(%)."
+---
 
-    ---
+**Example 29 — Product Weight by Sales Type**
+User: "show product weight for sales components in C3 2025"  
+Refined: "Provide product_wt for components categorized as 'Sales' for C3-2025.  
+Present the results in a table with columns: component_type, cycle, product_wt."
 
-    **Example 28 — Currency Context**
-    User: "show payout by product for Japan in Q1 2025"  
-    Refined: "Provide payout grouped by product_name for Japan for Q1-2025, with payout values in JPY.  
-    Present the results in a table with columns: product_name, cycle, payout (JPY)."
+---
 
-    ---
+**Example 30 — Cross-Year Comparison**
+User: "compare total sales between Q2 2024 and Q2 2025"  
+Refined: "Provide total sales for Q2-2024 and Q2-2025.  
+Present the results in a table with columns: cycle, sales."
 
-    **Example 29 — Product Weight by Sales Type**
-    User: "show product weight for sales components in C3 2025"  
-    Refined: "Provide product_wt for components categorized as 'Sales' for C3-2025.  
-    Present the results in a table with columns: component_type, cycle, product_wt."
-
-    ---
-
-    **Example 30 — Cross-Year Comparison**
-    User: "compare total sales between Q2 2024 and Q2 2025"  
-    Refined: "Provide total sales for Q2-2024 and Q2-2025.  
-    Present the results in a table with columns: cycle, sales."
-
-    Return only the rewritten question or the 'not relevant' message.
-    """
+Return only the rewritten question or the 'not relevant' message.
+"""
 
     # Run first pass
     response = llm.invoke(prompt)
