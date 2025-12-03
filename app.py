@@ -235,7 +235,7 @@ _candidate_cat_cols = [
 categorical_columns = [c for c in _candidate_cat_cols if c in df.columns]
 categorical_values = {col: df[col].astype(str).unique().tolist() for col in categorical_columns}
 
-# Define the SQL tool (same description as base)
+# Define the SQL tool (same structure, enhanced instructions)
 sql_tool = Tool(
     name="SQL Database",
     func=run_sql_query,
@@ -248,7 +248,18 @@ sql_tool = Tool(
         "Additional Instructions: "
         "- Remember 'Sales' and 'Targets' are absolute numbers even if they are in decimals. "
         "- 'Attainment' and 'Achievement' are decimals (0–1). Convert to % when showing. "
-        "- Aggregations: SUM() for absolute metrics, AVG() for ratios unless SUM() explicitly requested. "
+        "- Aggregations: Use SUM() for absolute metrics. For ratios, strictly follow the explicit formulas from the refined query "
+        "  (for example, average_attainment = SUM(sales) / SUM(targets)). Do not default to AVG() of ratio columns unless the refined query clearly asks for it. "
+        "- For average attainment, ALWAYS use: average_attainment = SUM(sales) / SUM(targets) and explain it in the same way in natural language "
+        "  (do not say AVG(attainment)). "
+        "- For average payout per rep, after applying filters and aggregating product_level_payout per emp_id into emp_cycle_payout, "
+        "  compute average_payout_per_rep = AVG(emp_cycle_payout) across the filtered employees, and describe the methodology in that way. "
+        "  Never compute average payout as AVG(product_level_payout) directly. "
+        "- If the user asks how a metric is calculated (for example, average attainment, average payout, nation performance, budget utilization), "
+        "  you MUST call this SQL tool using the correct formulas, and first explain the exact formula step by step using the SAME expression you will use in SQL, "
+        "  then run the SQL and show the output. "
+        "- If the user asks about 'average payout' (including questions like 'how did you calculate average payout'), always follow the employee-level methodology "
+        "  (emp_cycle_payout = SUM(product_level_payout) per emp_id; average_payout_per_rep = AVG(emp_cycle_payout)) and do not answer based only on generic reasoning. "
         "- Budget Utilization = SUM(Product_level_Payout) / SUM(Product_Target_Pay). "
         "- Always use exact column names and SQLite syntax."
     ),
@@ -272,7 +283,7 @@ sql_agent = initialize_agent(
 )
 
 # -----------------------------
-# Validation & refine (base behavior)
+# Validation & refine
 # -----------------------------
 def is_query_relevant(query: str) -> bool:
     col_list = ", ".join(df.columns)
@@ -394,7 +405,12 @@ Task:
       4) For **percentages**, the denominator is **COUNT(DISTINCT emp_id)** in the same filtered scope (before applying the condition). The numerator is **COUNT(DISTINCT emp_id)** that meet the condition.
       5) Only if the user explicitly says “row-level,” then interpret 100% at row level (`product_level_payout >= product_target_pay` per row). Otherwise default to **employee-level aggregation** as above.
       6) Use **exact column names** from `my_table`. Do **not** invent new base columns.
-
+      - For **average payout per rep** questions (for example, "average payout for France in Q1 24" or "how did you calculate average payout for UK in C2 25"), you MUST:
+        1) Apply all filters (country, cycle, role_name, team_business_unit, product_name, terr_id) as requested.
+        2) Aggregate to employee scope: compute **emp_cycle_payout = SUM(product_level_payout)** grouped by emp_id (and include any grouping dimensions needed such as country, cycle).
+        3) Then compute **average_payout_per_rep = AVG(emp_cycle_payout)** over the employees in the filtered scope (conceptually this is the average of each rep's total aggregated payout).
+        4) You MUST NOT compute average payout as **AVG(product_level_payout)** directly.
+        5) In the refined instruction, clearly describe this methodology and expected output columns such as country, cycle, average_payout_per_rep (and others if needed).
 
 MANDATORY SQL AGGREGATION RULE (copy exactly when relevant):
 For any user request that asks for "count of reps", "% of reps", "reps who achieved X% payout", or similar employee-level KPIs:
@@ -535,6 +551,31 @@ Refined: "For India, Q2-2025, group by team_business_unit. Within each team, agg
 **Example RP9 — Product-wise % with payout ≥ 100%**
 User: "product wise % of reps at 100%+ payout for India in Q2 2025"
 Refined: "For India, Q2-2025, group by product_name. Within each product, aggregate per emp_id: SUM(product_level_payout) and SUM(product_target_pay). Numerator = COUNT(DISTINCT emp_id where emp_cycle_payout >= emp_cycle_target for that product grouping). Denominator = COUNT(DISTINCT emp_id) per product. Present: country, product_name, cycle, percent_reps_ge_100pct(%)."
+
+
+# === Average payout per rep ===
+
+**Example AP01 — Average payout per rep (employee-level)**
+User: "give me average payout for france in q1 24"
+Refined:
+"For France in Q1-2024, first filter my_table where country = 'France' and cycle = 'Q1-2024'.
+Then aggregate to employee level:
+  emp_cycle_payout = SUM(product_level_payout) grouped by emp_id.
+Next compute:
+  average_payout_per_rep = AVG(emp_cycle_payout)
+across all employees in this filtered scope.
+Present a single-row table with columns: country, cycle, average_payout_per_rep, and optionally total_reps (COUNT(DISTINCT emp_id))."
+
+**Example AP02 — Explain how average payout was calculated**
+User: "can you explain me how did you calculate average payout for UK in c2 25"
+Refined:
+"For the UK in C2-2025, first filter my_table where country = 'UK' and cycle = 'C2-2025'.
+Then aggregate to employee level:
+  emp_cycle_payout = SUM(product_level_payout) grouped by emp_id.
+Next compute:
+  average_payout_per_rep = AVG(emp_cycle_payout)
+across all employees in this filtered scope.
+In the final answer, first explain this methodology step by step (including emp-level aggregation and then averaging emp_cycle_payout), and then optionally show a table with columns: country, cycle, average_payout_per_rep and total_reps (COUNT(DISTINCT emp_id))."
 
 
 # === Existing examples (kept as-is) ===
@@ -820,7 +861,7 @@ def ask_csv_agent(user_question: str) -> str:
         return f"❌ Agent execution error: {str(e)}"
 
 # -----------------------------
-# Download helpers (copied from provided streamlit code)
+# Download helpers
 # -----------------------------
 def to_csv_bytes(df_export: pd.DataFrame) -> bytes:
     return df_export.to_csv(index=False).encode("utf-8")
@@ -949,7 +990,7 @@ if st.session_state.get("show_download_overlay"):
     st.stop()
 
 # -------------------------------------------------
-# Chat UI rendering (copied and adapted)
+# Chat UI rendering
 # -------------------------------------------------
 chat_ph = st.empty()
 
@@ -1038,7 +1079,6 @@ def render_chat():
                         block = f"<div class='msg-meta'>🤖 Bot</div><div class='msg-bot'>{before_html}</div>"
                         c.markdown(block, unsafe_allow_html=True)
                     # Render the parsed dataframe in a clean table
-                    # Use the container 'c' so the table appears inside the chat area
                     with c:
                         st.dataframe(df_table, use_container_width=True)
                     if after:
