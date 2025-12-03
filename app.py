@@ -262,6 +262,11 @@ sql_tool = Tool(
         "  (emp_cycle_payout = SUM(product_level_payout) per emp_id; average_payout_per_rep = AVG(emp_cycle_payout)) and do not answer based only on generic reasoning. "
         "- Budget Utilization = SUM(Product_level_Payout) / SUM(Product_Target_Pay). "
         "- Always use exact column names and SQLite syntax."
+        "- For any result table (including 'top N' outputs such as top 3 teams/products), all rows and values MUST come directly from the SQL tool result set. "
+
+        "  If the SQL query returns fewer rows than the requested N, clearly state that fewer than N records exist and show only those rows. "
+
+        "  Never fabricate additional teams, products, or placeholder rows like '[data not shown]' for entities that do not appear in the SQL output. "
     ),
 )
 
@@ -452,7 +457,17 @@ MANDATORY for "highest/top/max" requests:
      payout aggregation with emp_agg as described above.
    - Attainment / average attainment "highest" questions → use attainment rules only
      (attainment column or SUM(sales)/SUM(targets)), and do NOT use emp_agg or payout fields.
+4) For any "top N" request (for example, top 3 teams or top 5 products), you MUST:
 
+   - Use SQL with ORDER BY ... DESC and LIMIT N to fetch the candidates.
+
+   - In the final answer, show ONLY the rows actually returned by the SQL tool.
+
+   - If fewer than N rows exist in the filtered data, explicitly state that fewer than N records were found
+
+     and DO NOT fabricate additional placeholder rows or entities (such as 'Team1', 'Team3' or rows with '[data not shown]').
+
+   - All team, country, product, and metric values in the answer must come directly from the SQL tool output and not from assumptions.
 
 
 ### 🔹 FEW-SHOT EXAMPLES
